@@ -585,15 +585,16 @@ _________________________
 - In your aggregation pipeline pipeline, use the "gender" field to limit results to people (that is, not organizations).
 - Count prizes for which the laureate's "bornCountry" is not also the "country" of any of their affiliations for the prize. Be sure to use field paths (precede a field name with "$") when appropriate.
 
+```
 pipeline = [
     # Limit results to people; project needed fields; unwind prizes
-    {____: {____: {"$ne": "org"}}},
+    {"$match": {"gender": {"$ne": "org"}}},
     {"$project": {"bornCountry": 1, "prizes.affiliations.country": 1}},
     {"$unwind": "$prizes"},
   
     # Count prizes with no country-of-birth affiliation
-    {"$addFields": {"bornCountryInAffiliations": {"$in": [____, "$prizes.affiliations.country"]}}},
-    {____: {"bornCountryInAffiliations": False}},
+    {"$addFields": {"bornCountryInAffiliations": {"$in": ["$bornCountry", "$prizes.affiliations.country"]}}},
+    {"$match": {"bornCountryInAffiliations": False}},
     {"$count": "awardedElsewhere"},
 ]
 
@@ -606,15 +607,20 @@ _________________________
 - Insert this stage into the pipeline so that it filters out single prizes (not arrays) and precedes any test for membership in an array of countries. - - Recall that the first parameter to <list>.insert is the (zero-based) index for insertion.
 
 ```
-pipeline = [{"$match": {"gender": {"$ne": "org"}}},{"$project": {"bornCountry": 1, "prizes.affiliations.country": 1}},
-    {"$unwind": "$prizes"},{"$addFields": {"bornCountryInAffiliations": {"$in": ["$bornCountry", "$prizes.affiliations.country"]}}},
-    {"$match": {"bornCountryInAffiliations": False}},{"$count": "awardedElsewhere"},]
+pipeline = [
+    {"$match": {"gender": {"$ne": "org"}}},
+    {"$project": {"bornCountry": 1, "prizes.affiliations.country": 1}},
+    {"$unwind": "$prizes"},
+    {"$addFields": {"bornCountryInAffiliations": {"$in": ["$bornCountry", "$prizes.affiliations.country"]}}},
+    {"$match": {"bornCountryInAffiliations": False}},
+    {"$count": "awardedElsewhere"},
+]
 
 # Construct the additional filter stage
-added_stage = {"$match": {____: {____: db.laureates.distinct(____)}}}
+added_stage = {"$match": {"prizes.affiliations.country": {"$in": db.laureates.distinct("prizes.affiliations.country")}}}
 
 # Insert this stage into the pipeline
-pipeline.insert(____, added_stage)
+pipeline.insert(3, added_stage)
 print(list(db.laureates.aggregate(pipeline)))
 
 ```
