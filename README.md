@@ -1,4 +1,3 @@
-# MongoPy
 **Apply MongoDB to search and analytics. Working with unprocessed data from the official nobelprize.org API,Exploring and answering questions about Nobel Laureates and prizes.**
 
 _________________________
@@ -469,6 +468,154 @@ pipeline = [
 
 for doc in db.laureates.aggregate(pipeline):
     print("{bornCountry}: {prizes}".format(**doc))
+
+```
+_________________________
+
+- Save to pipeline an aggregation pipeline to collect prize documents as detailed above. Use Python's collections.OrderedDict to specify any sorting.
+```
+from collections import OrderedDict
+from itertools import groupby
+from operator import itemgetter
+
+original_categories = set(db.prizes.distinct("category", {"year": "1901"})) 
+#['physics', 'chemistry', 'medicine', 'literature', 'peace']
+
+
+# Save an pipeline to collect original-category prizes
+pipeline = [
+    {'$match': {'category': {'$in': list(original_categories)}}},
+    {'$project': {'category': 1, 'year': 1}},
+    {'$sort': OrderedDict([('year',-1)])}
+]
+cursor = db.prizes.aggregate(pipeline)
+for key, group in groupby(cursor, key=itemgetter("year")):
+    missing = original_categories - {doc["category"] for doc in group}
+    if missing:
+        print("{year}: {missing}".format(year=key, missing=", ".join(sorted(missing))))
+        
+        
+        db.prizes.distinct("category", {"year": "1901"})
+
+```
+_________________________
+
+- Fill out pipeline to determine the number of prizes awarded (at least partly) to organizations.
+```
+# Count prizes awarded (at least partly) to organizations as a sum over sizes of "prizes" arrays.
+#In the slides at the beginning of this lesson, we saw a two-stage aggregation pipeline to determine the number of prizes awarded in total. How many prizes were awarded (at least partly) to organizations?
+
+pipeline = [
+    {'$match': {'gender': "org"}},
+    {"$project": {"n_prizes": {"$size": '$prizes'}}},
+    {"$group": {"_id": None, "n_prizes_total": {"$sum": "n_prizes"}}}
+]
+
+print(list(db.laureates.aggregate(pipeline)))
+
+```
+_________________________
+> What proportion of laureates won a prize while affiliated with an institution in their country of birth? Build an aggregation pipeline to get the count of laureates who either did or did not win a prize with an affiliation country that is a substring of their country of birth -- for example, the prize affiliation country "Germany" should match the country of birth "Prussia (now Germany)".
+
+- Use $unwind stages to ensure a single prize affiliation country per pipeline document.
+- Filter out prize-affiliation-country values that are "empty" (null, not present, etc.) -- ensure values are "$in" the list of known values.
+- Produce a count of documents for each value of "affilCountrySameAsBorn" (a field we've projected for you using the $indexOfBytes operator) by adding 1 to the running sum.
+
+```
+key_ac = "prizes.affiliations.country"
+key_bc = "bornCountry"
+pipeline = [
+    {"$project": {key_bc: 1, key_ac: 1}},
+
+    # Ensure a single prize affiliation country per pipeline document
+    {"$unwind": "$prizes"},
+    {"$unwind": "$prizes.affiliations"},
+
+    # Ensure values in the list of distinct values (so not empty)
+    {"$match": {key_ac: {"$in": db.laureates.distinct(key_ac)}}},
+    {"$project": {"affilCountrySameAsBorn": {
+        "$gte": [{"$indexOfBytes": ["$"+key_ac, "$"+key_bc]}, 0]}}},
+
+    # Count by "$affilCountrySameAsBorn" value (True or False)
+    {"$group": {"_id": "$affilCountrySameAsBorn",
+                "count": {"$sum": 1}}},
+]
+for doc in db.laureates.aggregate(pipeline): print(doc)
+
+
+#{'count': 477, '_id': True}
+#{'count': 261, '_id': False}
+
+```
+_________________________
+> Countries of birth by prize categorySome prize categories have laureates hailing from a greater number of countries than do other categories. You will build an aggregation pipeline for the prizes collection to collect these numbers, using a $lookup stage to obtain laureate countries of birth.
+
+- $unwind the laureates array field to output one pipeline document for each array element.
+- After pulling in laureate bios with a $lookup stage, unwind the new laureate_bios array field (each laureate has only a single biography document).
+- Collect the set of bornCountries associated with each prize category.
+- Project out the size of each category's set of bornCountries.
+
+```
+pipeline = [
+    # Unwind the laureates array
+    {"$unwind": "$laureates"},
+    {"$lookup": {
+        "from": "laureates", "foreignField": "id",
+        "localField": "laureates.id", "as": "laureate_bios"}},
+
+    # Unwind the new laureate_bios array
+    {"$unwind": "$laureate_bios"},
+    {"$project": {"category": 1,
+                  "bornCountry": "$laureate_bios.bornCountry"}},
+
+    # Collect bornCountry values associated with each prize category
+    {"$group": {'_id': "$category",
+                "bornCountries": {"$addToSet": "$bornCountry"}}},
+
+    # Project out the size of each category's (set of) bornCountries
+    {"$project": {"category": 1,
+                  "nBornCountries": {"$size": "$bornCountries"}}},
+    {"$sort": {"nBornCountries": -1}},
+]
+for doc in db.prizes.aggregate(pipeline): print(doc)
+
+```
+_________________________
+
+- In your aggregation pipeline pipeline, use the "gender" field to limit results to people (that is, not organizations).
+- Count prizes for which the laureate's "bornCountry" is not also the "country" of any of their affiliations for the prize. Be sure to use field paths (precede a field name with "$") when appropriate.
+
+pipeline = [
+    # Limit results to people; project needed fields; unwind prizes
+    {____: {____: {"$ne": "org"}}},
+    {"$project": {"bornCountry": 1, "prizes.affiliations.country": 1}},
+    {"$unwind": "$prizes"},
+  
+    # Count prizes with no country-of-birth affiliation
+    {"$addFields": {"bornCountryInAffiliations": {"$in": [____, "$prizes.affiliations.country"]}}},
+    {____: {"bornCountryInAffiliations": False}},
+    {"$count": "awardedElsewhere"},
+]
+
+print(list(db.laureates.aggregate(pipeline)))
+
+```
+_________________________
+
+- Construct a stage added_stage that filters for laureate "prizes.affiliations.country" values that are non-empty, that is, are $in a list of the distinct values that the field takes in the collection.
+- Insert this stage into the pipeline so that it filters out single prizes (not arrays) and precedes any test for membership in an array of countries. - - Recall that the first parameter to <list>.insert is the (zero-based) index for insertion.
+
+```
+pipeline = [{"$match": {"gender": {"$ne": "org"}}},{"$project": {"bornCountry": 1, "prizes.affiliations.country": 1}},
+    {"$unwind": "$prizes"},{"$addFields": {"bornCountryInAffiliations": {"$in": ["$bornCountry", "$prizes.affiliations.country"]}}},
+    {"$match": {"bornCountryInAffiliations": False}},{"$count": "awardedElsewhere"},]
+
+# Construct the additional filter stage
+added_stage = {"$match": {____: {____: db.laureates.distinct(____)}}}
+
+# Insert this stage into the pipeline
+pipeline.insert(____, added_stage)
+print(list(db.laureates.aggregate(pipeline)))
 
 ```
 _________________________
